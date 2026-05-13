@@ -1,0 +1,44 @@
+# Python environments (we install via requirements.txt in Docker)
+venv/
+venv_linux/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Byte code
+*.egg-info/
+dist/
+build/

@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /agent
+
+# Only need requests/httpx — no heavy ML deps
+RUN pip install --no-cache-dir httpx && \
+    apt-get update && apt-get install -y procps && rm -rf /var/lib/apt/lists/*
+
+COPY log_agent.py .
+
+# Run as root so it can read /var/log files
+CMD ["python", "-u", "log_agent.py"]

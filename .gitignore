@@ -1,0 +1,65 @@
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+
+# ─── Virtual environments ─────────────────────────────────────────────────────
+venv/
+venv_linux/
+.venv/
+env/
+ENV/
+
+# ─── Environment / Secrets ───────────────────────────────────────────────────
+.env
+# Keep the example template
+!.env.example
+
+# ─── Database files ───────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ─── Trained ML model files ───────────────────────────────────────────────────
+# Models are rebuilt on first run — do not commit binaries
+models/*.joblib
+models/version.txt
+# Keep the models/ directory itself
+!models/.gitkeep
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ─── Data ────────────────────────────────────────────────────────────────────
+data/
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+.docker/
+
+# ─── IDE / OS ────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Test artifacts ──────────────────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+*.zip
+
+# ─── Large report/presentation files (optional — remove lines to include) ────
+*.pptx
+Final_report.pdf
+AI_SOC_Report.docx
+AI_SOC_Chapter10_Appendix.docx

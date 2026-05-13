@@ -1,0 +1,131 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AI-SOC  —  Production Pull-and-Run Compose
+#
+# Usage (on any computer with Docker installed):
+#
+#   1. Copy .env.example → .env and fill in your passwords
+#      (or just run:  bash ai-soc.sh   — it auto-generates secrets)
+#
+#   2. Pull pre-built images and start:
+#      docker compose -f docker-compose.prod.yml pull
+#      docker compose -f docker-compose.prod.yml up -d
+#
+# Replace Seenu7x below with your actual GitHub username, e.g.:
+#   APP_IMAGE:   ghcr.io/sivaseenu/ai-soc-app:latest
+#   AGENT_IMAGE: ghcr.io/sivaseenu/ai-soc-log-agent:latest
+# ─────────────────────────────────────────────────────────────────────────────
+
+# !! Set this to your GitHub username !!
+x-github-user: &github_user Seenu7x
+
+services:
+  # ── PostgreSQL Database ────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: aisoc-db
+    environment:
+      POSTGRES_USER: aisoc
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-aisoc_password}
+      POSTGRES_DB: aisoc_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U aisoc" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: aisoc-redis
+    mem_limit: 128m
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── AI-SOC Application  (pulled from GHCR — no build needed) ─────────────
+  app:
+    image: ghcr.io/Seenu7x/ai-soc-app:latest
+    container_name: aisoc-app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://aisoc:${DB_PASSWORD:-aisoc_password}@db:5432/aisoc_db
+      - REDIS_URL=redis://redis:6379/0
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_LEVEL=INFO
+      - API_RELOAD=False
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-aisoc-admin-2024}
+      - ANALYST_PASSWORD=${ANALYST_PASSWORD:-aisoc-analyst-2024}
+      - API_KEY=${API_KEY:-aisoc-internal-api-key-change-me}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+    volumes:
+      - app_models:/app/models
+      - app_logs:/app/logs
+    mem_limit: 1g
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+  # ── Log Agent  (pulled from GHCR — no build needed) ──────────────────────
+  log-agent:
+    image: ghcr.io/Seenu7x/ai-soc-log-agent:latest
+    container_name: aisoc-log-agent
+    environment:
+      - API_BASE=http://app:8000/api/v1
+      - POLL_INTERVAL=3
+      - BATCH_SIZE=25
+      - DOCKER_LOG_ROOT=/var/lib/docker/containers
+      - DOCKER_SCAN_INTERVAL=30
+      - API_KEY=${API_KEY:-aisoc-internal-api-key-change-me}
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    mem_limit: 256m
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "0"
+
+  # ── Dashboard (Nginx) ──────────────────────────────────────────────────────
+  dashboard:
+    image: ghcr.io/Seenu7x/ai-soc-app:latest
+    container_name: aisoc-dashboard
+    # Use the built-in Nginx served by the app image's dashboard folder
+    # Override with a dedicated nginx image if you separate the dashboard
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    mem_limit: 128m
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  app_models:
+  app_logs:
