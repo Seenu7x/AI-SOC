@@ -84,29 +84,12 @@ services:
       start_period: 20s
       retries: 3
 
-  # ── Log Agent  (pulled from GHCR — no build needed) ──────────────────────
-  log-agent:
-    image: ghcr.io/Seenu7x/ai-soc-log-agent:latest
-    container_name: aisoc-log-agent
-    environment:
-      - API_BASE=http://app:8000/api/v1
-      - POLL_INTERVAL=3
-      - BATCH_SIZE=25
-      - DOCKER_LOG_ROOT=/var/lib/docker/containers
-      - DOCKER_SCAN_INTERVAL=30
-      - API_KEY=${API_KEY:-aisoc-internal-api-key-change-me}
-    volumes:
-      - /var/log:/var/log:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-    mem_limit: 256m
-    depends_on:
-      app:
-        condition: service_healthy
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp
-    user: "0"
+  # ── Log Agent — runs NATIVELY on the host (cross-platform) ──────────────
+  # Start after the stack is up:
+  #   Linux / macOS:  python log_agent.py
+  #   Windows:        .\ai-soc.ps1 -StartAgent
+  #                   (or: python log_agent.py in a separate terminal)
+  # Install deps:     pip install -r requirements-agent.txt
 
   # ── Dashboard (Nginx) ──────────────────────────────────────────────────────
   dashboard:

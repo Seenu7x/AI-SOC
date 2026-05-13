@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-AI-SOC Real-Time Host Log Ingestion Agent
-==========================================
-Tails host system logs and continuously feeds security events
-to the AI-SOC API for real-time anomaly detection.
+AI-SOC Real-Time Host Log Ingestion Agent  (Cross-Platform)
+=============================================================
+Auto-detects the host OS and reads native security logs:
 
-Log sources:
-  - /var/log/auth.log      → login events (SSH, sudo, PAM)
-  - /var/log/syslog        → system events
-  - /var/log/kern.log      → kernel / network events
-  - /var/log/ufw.log       → firewall block/allow events
-  - /var/log/nginx/access.log → HTTP network events (if present)
-  - /var/log/apache2/access.log → HTTP network events (if present)
-  - /var/lib/docker/containers/*/*.log → Docker container logs (if mounted)
+  Linux   → /var/log/auth.log, syslog, ufw.log, Docker container logs
+  Windows → Windows Event Log (Security/System) via wevtutil.exe
+  macOS   → Unified log via `log stream` + /var/log/system.log
+
+All platforms POST events to the same AI-SOC API endpoint.
 """
+import platform
+CURRENT_OS = platform.system()   # "Linux" | "Windows" | "Darwin"
 
 import os
 import re
@@ -40,7 +38,7 @@ API_BASE          = os.getenv("API_BASE", "http://localhost:8000/api/v1")
 POLL_INTERVAL     = float(os.getenv("POLL_INTERVAL", "2"))   # seconds between batches
 BATCH_SIZE        = int(os.getenv("BATCH_SIZE", "20"))        # events per POST
 API_KEY           = os.getenv("API_KEY", "")                  # shared secret → X-API-Key header
-HOSTNAME         = os.uname().nodename
+HOSTNAME         = platform.node()
 DOCKER_LOG_ROOT  = os.getenv("DOCKER_LOG_ROOT", "/var/lib/docker/containers")
 DOCKER_SCAN_INTERVAL = int(os.getenv("DOCKER_SCAN_INTERVAL", "30"))  # re-scan for new containers
 
@@ -750,10 +748,21 @@ def main():
         return
 
     event_queue: List[Dict] = []
+
+    if CURRENT_OS == "Windows":
+        _run_windows(event_queue)
+    elif CURRENT_OS == "Darwin":
+        _run_macos(event_queue)
+    else:
+        _run_linux(event_queue)
+
+
+# ─── Linux runner (original behaviour) ────────────────────────────────────────
+
+def _run_linux(event_queue: List[Dict]):
     tailers: List[LogTailer] = []
     active_sources = 0
 
-    # Initialize the global brute-force detector so parsers can use it
     global _brute_force_detector
     _brute_force_detector = BruteForceDetector(event_queue)
     logger.info(f"🛡️  Brute-force detector: threshold={BRUTE_FORCE_THRESHOLD} failures in {BRUTE_FORCE_WINDOW}s")
@@ -769,17 +778,267 @@ def main():
         logger.info("Tip: sudo usermod -aG adm $USER && su - $USER")
         return
 
-    # Start Docker container log watcher
     if ENABLE_DOCKER_MON:
         docker_watcher = DockerContainerWatcher(DOCKER_LOG_ROOT, event_queue)
         docker_watcher.start()
     else:
         docker_watcher = None
-        logger.info("🐳 Docker container monitoring DISABLED (ENABLE_DOCKER_MON=false)")
+        logger.info("🐳 Docker monitoring DISABLED")
 
-    logger.info(f"🎯 Monitoring {active_sources} system log sources + Docker containers. Events → {API_BASE}/events/bulk")
-    logger.info("Press Ctrl+C to stop.\n")
+    logger.info(f"🐧 Linux — monitoring {active_sources} log sources. Events → {API_BASE}")
+    _event_loop(event_queue)
 
+    for t in tailers:
+        t.stop()
+    if docker_watcher:
+        with docker_watcher._lock:
+            for t in docker_watcher._tailers.values():
+                t.stop()
+
+
+# ─── Windows runner ────────────────────────────────────────────────────────────
+
+# Windows Event IDs of interest
+_WIN_EVENT_IDS = {
+    4624: ("login",   "allow",  "Successful logon"),
+    4625: ("login",   "deny",   "Failed logon"),
+    4634: ("login",   "allow",  "Logoff"),
+    4648: ("login",   "deny",   "Logon with explicit credentials"),
+    4688: ("system",  "allow",  "Process created"),
+    4697: ("system",  "deny",   "Service installed"),
+    7036: ("system",  "allow",  "Service state changed"),
+    1102: ("system",  "deny",   "Audit log cleared"),
+}
+
+def _wevtutil_tail(log_name: str, event_queue: List[Dict], stop_event: threading.Event):
+    """Poll Windows Event Log using wevtutil, yield new events."""
+    import xml.etree.ElementTree as ET
+
+    # Track last record number we've seen
+    last_record = 0
+    NS = "{http://schemas.microsoft.com/win/2004/08/events/event}"
+
+    while not stop_event.is_set():
+        try:
+            # Query events newer than last_record
+            query = f"*[System[EventRecordID > {last_record}]]"
+            cmd = ["wevtutil", "qe", log_name, f"/q:{query}",
+                   "/f:xml", "/rd:false", "/c:50"]
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=10, encoding="utf-8", errors="replace")
+            if result.returncode != 0 or not result.stdout.strip():
+                time.sleep(POLL_INTERVAL)
+                continue
+
+            # wevtutil returns multiple XML fragments; wrap them
+            xml_text = f"<Events>{result.stdout}</Events>"
+            try:
+                root = ET.fromstring(xml_text)
+            except ET.ParseError:
+                time.sleep(POLL_INTERVAL)
+                continue
+
+            for evt in root.findall(f"{NS}Event"):
+                sys_el  = evt.find(f"{NS}System")
+                if sys_el is None:
+                    continue
+
+                eid_el  = sys_el.find(f"{NS}EventID")
+                rid_el  = sys_el.find(f"{NS}EventRecordID")
+                time_el = sys_el.find(f"{NS}TimeCreated")
+
+                if eid_el is None or rid_el is None:
+                    continue
+
+                eid = int(eid_el.text or 0)
+                rid = int(rid_el.text or 0)
+                if rid <= last_record:
+                    continue
+                last_record = max(last_record, rid)
+
+                if eid not in _WIN_EVENT_IDS:
+                    continue
+
+                ev_type, action, desc = _WIN_EVENT_IDS[eid]
+
+                # Try to extract username from EventData
+                username = None
+                data_el = evt.find(f"{NS}EventData")
+                if data_el is not None:
+                    for d in data_el.findall(f"{NS}Data"):
+                        name = d.get("Name", "")
+                        if name in ("TargetUserName", "SubjectUserName") and d.text:
+                            username = d.text
+                            break
+
+                event_queue.append({
+                    "event_type": ev_type,
+                    "src_ip": "127.0.0.1",
+                    "dst_ip": HOSTNAME,
+                    "bytes_sent": 0, "bytes_received": 0,
+                    "duration": 0.0, "packet_count": 1,
+                    "username": username,
+                    "action": action,
+                    "description": f"[Win EventID {eid}] {desc}" + (f": {username}" if username else ""),
+                    "raw_log": f"EventLog:{log_name} EID:{eid} RID:{rid}",
+                })
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            logger.debug(f"wevtutil error ({log_name}): {e}")
+
+        time.sleep(POLL_INTERVAL)
+
+
+def _win_firewall_tail(event_queue: List[Dict], stop_event: threading.Event):
+    """Tail the Windows Firewall log file."""
+    fw_log = Path(os.environ.get(
+        "WIN_FIREWALL_LOG",
+        r"C:\Windows\System32\LogFiles\Firewall\pfirewall.log"
+    ))
+    if not fw_log.exists():
+        logger.warning(f"Windows Firewall log not found: {fw_log}")
+        return
+
+    # Pattern: date time action proto src-ip dst-ip src-port dst-port ...
+    _fw = re.compile(
+        r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (\S+) (\S+) ([\d\.]+) ([\d\.]+) (\d+) (\d+)"
+    )
+    try:
+        with open(fw_log, "r", errors="replace") as f:
+            f.seek(0, 2)   # seek to end
+            while not stop_event.is_set():
+                line = f.readline()
+                if not line:
+                    time.sleep(1)
+                    continue
+                m = _fw.search(line)
+                if m:
+                    _, action, proto, src, dst, sport, dport = m.groups()
+                    event_queue.append({
+                        "event_type": "network",
+                        "src_ip": src, "dst_ip": dst,
+                        "src_port": int(sport), "dst_port": int(dport),
+                        "protocol": proto.upper(),
+                        "bytes_sent": 0, "bytes_received": 0,
+                        "duration": 0.0, "packet_count": 1,
+                        "action": "allow" if action.upper() == "ALLOW" else "deny",
+                        "description": f"Windows Firewall {action}: {src}:{sport} → {dst}:{dport}/{proto}",
+                        "raw_log": line.strip(),
+                    })
+    except PermissionError:
+        logger.warning("Cannot read Windows Firewall log — run agent as Administrator")
+
+
+def _run_windows(event_queue: List[Dict]):
+    logger.info("🪟  Windows mode — reading Security + System Event Logs + Firewall log")
+    stop_event = threading.Event()
+    threads = [
+        threading.Thread(target=_wevtutil_tail,
+                         args=("Security", event_queue, stop_event), daemon=True),
+        threading.Thread(target=_wevtutil_tail,
+                         args=("System",   event_queue, stop_event), daemon=True),
+        threading.Thread(target=_win_firewall_tail,
+                         args=(event_queue, stop_event), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    logger.info(f"🎯 Windows agent running. Events → {API_BASE}")
+    try:
+        _event_loop(event_queue)
+    finally:
+        stop_event.set()
+
+
+# ─── macOS runner ──────────────────────────────────────────────────────────────
+
+# macOS predicates for `log stream`
+_MACOS_PREDICATES = [
+    'process == "sshd"',
+    'process == "sudo"',
+    'process == "socketfilterfw"',
+    'eventMessage CONTAINS "authentication failure"',
+    'eventMessage CONTAINS "Invalid user"',
+    'eventMessage CONTAINS "Failed password"',
+]
+
+_MAC_SSH_ACCEPT = re.compile(r"Accepted (\w+) for (\S+) from ([\d\.]+) port (\d+)")
+_MAC_SSH_FAIL   = re.compile(r"Failed (\w+) for (?:invalid user )?(\S+) from ([\d\.]+) port (\d+)")
+_MAC_SUDO       = re.compile(r"sudo:\s+(\S+) : .* COMMAND=(.*)")
+_MAC_FIREWALL   = re.compile(r"(Allow|Deny) (TCP|UDP) .* (\d+\.\d+\.\d+\.\d+):(\d+) <-> (\d+\.\d+\.\d+\.\d+):(\d+)")
+
+
+def _parse_macos_line(line: str) -> Optional[Dict]:
+    m = _MAC_SSH_ACCEPT.search(line)
+    if m:
+        _, user, src_ip, port = m.groups()
+        return {"event_type": "login", "src_ip": src_ip, "dst_ip": HOSTNAME,
+                "src_port": int(port), "dst_port": 22, "protocol": "TCP",
+                "bytes_sent": 512, "bytes_received": 512, "duration": 0.5, "packet_count": 10,
+                "username": user, "action": "allow",
+                "description": f"SSH login accepted: {user} from {src_ip}:{port}",
+                "raw_log": line.strip()}
+    m = _MAC_SSH_FAIL.search(line)
+    if m:
+        _, user, src_ip, port = m.groups()
+        return {"event_type": "login", "src_ip": src_ip, "dst_ip": HOSTNAME,
+                "src_port": int(port), "dst_port": 22, "protocol": "TCP",
+                "bytes_sent": 128, "bytes_received": 128, "duration": 0.1, "packet_count": 3,
+                "username": user, "action": "deny",
+                "description": f"SSH login FAILED: {user} from {src_ip}:{port}",
+                "raw_log": line.strip()}
+    m = _MAC_SUDO.search(line)
+    if m:
+        user, cmd = m.groups()
+        return {"event_type": "system", "src_ip": "127.0.0.1", "dst_ip": HOSTNAME,
+                "bytes_sent": 0, "bytes_received": 0, "duration": 0.0, "packet_count": 0,
+                "username": user, "action": "allow", "resource": cmd.strip(),
+                "description": f"sudo: {user} ran {cmd.strip()}",
+                "raw_log": line.strip()}
+    m = _MAC_FIREWALL.search(line)
+    if m:
+        action, proto, src, sport, dst, dport = m.groups()
+        return {"event_type": "network", "src_ip": src, "dst_ip": dst,
+                "src_port": int(sport), "dst_port": int(dport), "protocol": proto,
+                "bytes_sent": 0, "bytes_received": 0, "duration": 0.0, "packet_count": 1,
+                "action": action.lower(),
+                "description": f"macOS Firewall {action}: {src}:{sport} → {dst}:{dport}/{proto}",
+                "raw_log": line.strip()}
+    return None
+
+
+def _run_macos(event_queue: List[Dict]):
+    """Stream macOS Unified Log via `log stream --predicate`."""
+    logger.info("🍎  macOS mode — streaming Unified Log via `log stream`")
+    predicate = " OR ".join(f"({p})" for p in _MACOS_PREDICATES)
+    cmd = ["log", "stream", "--predicate", predicate, "--style", "syslog"]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+    except FileNotFoundError:
+        logger.error("`log` command not found — macOS 10.12+ required")
+        return
+
+    logger.info(f"🎯 macOS agent running. Events → {API_BASE}")
+
+    def _reader():
+        for line in proc.stdout:
+            evt = _parse_macos_line(line)
+            if evt:
+                event_queue.append(evt)
+
+    reader_thread = threading.Thread(target=_reader, daemon=True)
+    reader_thread.start()
+
+    try:
+        _event_loop(event_queue)
+    finally:
+        proc.terminate()
+
+
+# ─── Shared event loop (all platforms) ────────────────────────────────────────
+
+def _event_loop(event_queue: List[Dict]):
+    """Drain event_queue in batches and POST to API. Runs until KeyboardInterrupt."""
     try:
         _last_dedup_log = time.time()
         while True:
@@ -788,22 +1047,13 @@ def main():
                 batch = event_queue[:BATCH_SIZE]
                 del event_queue[:BATCH_SIZE]
                 post_events(batch)
-            # Log dedup stats every 5 minutes
             if time.time() - _last_dedup_log > 300:
                 suppressed = _deduplicator.stats()
                 if suppressed:
-                    logger.info(f"🔇 Deduplicator suppressed {suppressed} duplicate events so far")
+                    logger.info(f"🔇 Deduplicator: {suppressed} duplicates suppressed")
                 _last_dedup_log = time.time()
     except KeyboardInterrupt:
-        logger.info("Stopping log agent…")
-    finally:
-        for t in tailers:
-            t.stop()
-        # Stop all Docker container tailers
-        if docker_watcher:
-            with docker_watcher._lock:
-                for t in docker_watcher._tailers.values():
-                    t.stop()
+        logger.info("\nStopping AI-SOC log agent…")
 
 
 if __name__ == "__main__":

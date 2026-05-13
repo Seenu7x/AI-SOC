@@ -71,31 +71,15 @@ services:
       retries: 3
 
   # ── Real-Time Host Log Ingestion Agent ────────────────────────────────────
-  log-agent:
-    build:
-      context: .
-      dockerfile: Dockerfile.agent
-    container_name: aisoc-log-agent
-    environment:
-      - API_BASE=http://app:8000/api/v1
-      - POLL_INTERVAL=3
-      - BATCH_SIZE=25
-      - DOCKER_LOG_ROOT=/var/lib/docker/containers
-      - DOCKER_SCAN_INTERVAL=30
-      # API key authenticates the agent with the backend (no JWT expiry issues)
-      - API_KEY=${API_KEY:-aisoc-internal-api-key-change-me}
-    volumes:
-      - /var/log:/var/log:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-    mem_limit: 256m
-    depends_on:
-      app:
-        condition: service_healthy
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp
-    user: "0"
+  # The log agent now runs NATIVELY on the host OS (not in Docker) so it can
+  # access platform-specific logs on Linux, Windows, and macOS.
+  #
+  # Start it manually after the stack is up:
+  #   Linux / macOS:  python log_agent.py
+  #   Windows:        python log_agent.py
+  #                   (or: .\ai-soc.ps1 -StartAgent)
+  #
+  # Install agent deps:  pip install -r requirements-agent.txt
 
   # ── Dashboard (Nginx — serves UI + proxies /api and /auth to backend) ─────
   dashboard:

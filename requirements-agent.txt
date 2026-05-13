@@ -1,0 +1,10 @@
+# AI-SOC Log Agent — Platform-Specific Requirements
+# Install with:  pip install -r requirements-agent.txt
+
+# ── Windows only ──────────────────────────────────────────────────────────────
+# Needed to interact with Windows Event Log (optional — wevtutil fallback is built-in)
+pywin32>=306 ; sys_platform == "win32"
+
+# ── All platforms ─────────────────────────────────────────────────────────────
+# httpx is optional — the agent falls back to urllib if not present
+httpx>=0.26.0
