@@ -92,7 +92,9 @@ echo ""
 ok "Backend is healthy (${ELAPSED}s)"
 
 # ── 7. Quick smoke test ───────────────────────────────────────────────────────
-HEALTH=$(curl -sf http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null || echo "unknown")
+HEALTH=$(curl -sf http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null \
+         || curl -sf http://localhost:8000/health | python -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null \
+         || echo "unknown")
 log "Health status: ${HEALTH}"
 
 # ── 8. Print summary ─────────────────────────────────────────────────────────

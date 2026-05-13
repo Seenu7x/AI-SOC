@@ -52,6 +52,7 @@ class Settings(BaseSettings):
         "env_file": ".env",
         "case_sensitive": False,
         "protected_namespaces": (),  # suppress model_ prefix warnings
+        "extra": "ignore",           # silently ignore unknown env vars (e.g. DB_PASSWORD)
     }
 
 
