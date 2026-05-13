@@ -33,6 +33,24 @@ except ImportError:
     import urllib.request as urllib_req
     HTTP = None
 
+# ─── Auto-load .env from current directory (when running natively, not in Docker)
+def _load_dotenv():
+    env_file = Path(".env")
+    if not env_file.exists():
+        env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:   # don't override real env vars
+                        os.environ[key] = val
+
+_load_dotenv()
+
 # ─── Config ────────────────────────────────────────────────────────────────────
 API_BASE          = os.getenv("API_BASE", "http://localhost:8000/api/v1")
 POLL_INTERVAL     = float(os.getenv("POLL_INTERVAL", "2"))   # seconds between batches
