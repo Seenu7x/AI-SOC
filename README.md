@@ -7,7 +7,7 @@
 
 ---
 
-## 🚀 Quick Start — Run Anywhere in 3 Commands
+## 🚀 Quick Start — Run Anywhere
 
 > **Requirements:** Docker + Docker Compose (no Python, no pip, nothing else needed)
 
@@ -16,14 +16,30 @@
 git clone https://github.com/Seenu7x/AI-SOC.git
 cd AI-SOC
 
-# 2. Deploy (auto-generates secrets, pulls images, starts everything)
-bash ai-soc.sh
+# 2. Create your .env file from the template (REQUIRED — never committed to git)
+cp .env.example .env
+```
 
-# 3. Open the dashboard
+Open `.env` and set at minimum:
+```env
+DB_PASSWORD=aisoc_password
+DATABASE_URL=postgresql://aisoc:aisoc_password@db:5432/aisoc_db
+SECRET_KEY=change-this-to-any-random-string
+API_KEY=change-this-to-any-random-key
+ADMIN_PASSWORD=aisoc-admin-2024
+ANALYST_PASSWORD=aisoc-analyst-2024
+```
+
+```bash
+# 3. Start all services (fresh volume — avoids password mismatch)
+docker compose down -v
+docker compose up -d
+
+# 4. Open the dashboard
 # → http://localhost:3000
 ```
 
-That's it. The script pulls pre-built images from GitHub Container Registry — **no build step required**.
+> ⚠️ **Always run `docker compose down -v` before the first `up`** on a fresh clone. This ensures the PostgreSQL volume is initialized with the password in your `.env` file.
 
 ---
 
@@ -200,11 +216,11 @@ curl -X POST http://localhost:8000/api/v1/models/train \
   -H "Content-Type: application/json" \
   -d '{"contamination_rate": 0.01, "n_estimators": 100}'
 
-# Simulate a brute-force attack
-python anomaly_simulator.py
+# Check health
+curl http://localhost:8000/health
 
-# Generate normal baseline data
-python normal_data_generator.py
+# View API docs
+# → http://localhost:8000/docs
 ```
 
 ---
@@ -272,11 +288,44 @@ The system automatically maps every security event to relevant controls across:
 docker compose down
 
 # Stop and wipe all data (fresh start)
-bash ai-soc.sh --reset-db
+docker compose down -v
+docker compose up -d
 
 # View logs
 docker compose logs -f app
-docker compose logs -f log-agent
+docker compose logs -f db
+```
+
+---
+
+## 🔧 Troubleshooting
+
+### ❌ `password authentication failed for user "aisoc"`
+
+This means the PostgreSQL Docker volume was initialized with a different password than what your `.env` has.
+
+**Fix:**
+```bash
+# Wipe the old volume and restart fresh
+docker compose down -v
+docker compose up -d
+```
+
+> `down -v` deletes the postgres volume. Docker re-creates it with the correct password from your `.env` on next startup.
+
+### ❌ No `.env` file / app won't start
+
+```bash
+cp .env.example .env
+# Edit .env and set DB_PASSWORD and DATABASE_URL
+docker compose down -v && docker compose up -d
+```
+
+### ❌ Container name conflict on startup
+
+```bash
+docker rm -f aisoc-db aisoc-redis aisoc-app aisoc-dashboard
+docker compose up -d
 ```
 
 ---
