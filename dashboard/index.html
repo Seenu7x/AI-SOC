@@ -361,8 +361,9 @@
       <span class="pulse red" id="pulse-dot"></span>
       <span id="api-status-text">Connecting…</span>
     </div>
-    <button class="login-btn" id="login-btn" onclick="toggleLogin()">🔒 Login</button>
+    <span id="logged-user-badge" style="font-size:12px;color:#68d391;font-weight:600"></span>
     <button class="refresh-btn" onclick="loadAll()">⟳ Refresh</button>
+    <button class="refresh-btn" onclick="doLogout()" style="border-color:rgba(252,129,129,.3);color:#fc8181">⏏ Logout</button>
   </div>
 </header>
 
@@ -572,25 +573,6 @@
   ⚠️ Cannot reach the backend API at <strong id="api-url-display"></strong> — ensure the server is running.
 </div>
 
-<!-- ── Login modal ────────────────────────────────────────────────────────────── -->
-<div id="login-modal-overlay">
-  <div class="login-modal">
-    <h2>🔐 Analyst Login</h2>
-    <p>Login to update alert statuses and train models. Read-only views are always available.</p>
-    <div class="login-field">
-      <label>Username</label>
-      <input type="text" id="login-username" value="analyst" autocomplete="username" />
-    </div>
-    <div class="login-field">
-      <label>Password</label>
-      <input type="password" id="login-password" placeholder="Enter password…" autocomplete="current-password"
-             onkeydown="if(event.key==='Enter')doLogin()" />
-    </div>
-    <div id="login-error"></div>
-    <button class="login-submit" id="login-submit-btn" onclick="doLogin()">Sign In</button>
-  </div>
-</div>
-
 <script>
 /* ─── Config ──────────────────────────────────────────────────────────────── */
 // When served via Docker/Nginx the proxy handles /api and /health transparently.
@@ -637,89 +619,31 @@ function toast(msg, type='info') {
   setTimeout(() => el.remove(), 4000);
 }
 
-/* ─── Auth state ──────────────────────────────────────────────────────────────── */
-let _jwtToken = sessionStorage.getItem('aisoc_token') || null;
-let _loggedUser = sessionStorage.getItem('aisoc_user') || null;
+/* ─── Auth guard — redirect to login if no token ── */
+const _jwtToken  = sessionStorage.getItem('aisoc_token');
+const _loggedUser = sessionStorage.getItem('aisoc_user') || 'analyst';
+if (!_jwtToken) { window.location.replace('/login.html'); }
 
-function _updateLoginBtn() {
-  const btn = document.getElementById('login-btn');
-  if (_jwtToken && _loggedUser) {
-    btn.textContent = `✅ ${_loggedUser}`;
-    btn.className = 'login-btn logged-in';
-    btn.onclick = doLogout;
-  } else {
-    btn.textContent = '🔒 Login';
-    btn.className = 'login-btn';
-    btn.onclick = toggleLogin;
-  }
-}
-
-function toggleLogin() {
-  document.getElementById('login-modal-overlay').classList.toggle('visible');
-  document.getElementById('login-error').textContent = '';
-  setTimeout(() => document.getElementById('login-password').focus(), 100);
-}
-
-async function doLogin() {
-  const username = document.getElementById('login-username').value.trim();
-  const password = document.getElementById('login-password').value;
-  const errEl    = document.getElementById('login-error');
-  const btn      = document.getElementById('login-submit-btn');
-  errEl.textContent = '';
-  btn.disabled = true;
-  btn.textContent = 'Signing in…';
-  try {
-    const r = await fetch(`${BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!r.ok) { errEl.textContent = 'Invalid username or password.'; return; }
-    const data = await r.json();
-    _jwtToken  = data.access_token;
-    _loggedUser = username;
-    sessionStorage.setItem('aisoc_token', _jwtToken);
-    sessionStorage.setItem('aisoc_user',  _loggedUser);
-    document.getElementById('login-modal-overlay').classList.remove('visible');
-    document.getElementById('login-password').value = '';
-    _updateLoginBtn();
-    toast(`✅ Logged in as ${username}`, 'success');
-  } catch (e) {
-    errEl.textContent = 'Login failed — check if the backend is running.';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Sign In';
-  }
-}
+// Show logged-in user badge
+document.getElementById('logged-user-badge').textContent = `✅ ${_loggedUser}`;
 
 function doLogout() {
-  _jwtToken = null; _loggedUser = null;
   sessionStorage.removeItem('aisoc_token');
   sessionStorage.removeItem('aisoc_user');
-  _updateLoginBtn();
-  toast('Logged out', 'info');
+  window.location.replace('/login.html');
 }
-
-// Close login modal on backdrop click
-document.getElementById('login-modal-overlay').addEventListener('click', function(e) {
-  if (e.target === this) this.classList.remove('visible');
-});
-
-_updateLoginBtn();
 
 async function apiFetch(path, opts={}) {
   const method  = (opts.method || 'GET').toUpperCase();
   const headers = { 'Content-Type': 'application/json' };
-  // Attach Bearer token for write operations
-  if (['PATCH','POST','PUT','DELETE'].includes(method) && _jwtToken) {
-    headers['Authorization'] = `Bearer ${_jwtToken}`;
-  }
+  if (_jwtToken) headers['Authorization'] = `Bearer ${_jwtToken}`;
   const r = await fetch(API + path, { headers, ...opts });
-  if (r.status === 401 && ['PATCH','POST','PUT','DELETE'].includes(method)) {
-    // Token expired or not logged in — prompt login
-    toast('🔒 Login required to perform this action', 'error');
-    document.getElementById('login-modal-overlay').classList.add('visible');
-    throw new Error('401 Unauthorized');
+  if (r.status === 401) {
+    // Token expired — kick back to login
+    sessionStorage.removeItem('aisoc_token');
+    sessionStorage.removeItem('aisoc_user');
+    window.location.replace('/login.html');
+    throw new Error('Session expired');
   }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
