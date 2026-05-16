@@ -23,7 +23,7 @@ from fastapi.security import (
     APIKeyHeader,
 )
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 from pydantic import BaseModel
 
 from app.core.config import get_settings
@@ -31,8 +31,13 @@ from app.core.config import get_settings
 settings = get_settings()
 
 # ── Crypto helpers ────────────────────────────────────────────────────────────
+# NOTE: passlib 1.7.4 is incompatible with bcrypt>=5.0.0 — use bcrypt directly.
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def hash_password(plain: str) -> str:
+    return _bcrypt.hashpw(plain.encode(), _bcrypt.gensalt()).decode()
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 bearer_scheme = HTTPBearer(auto_error=False)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -43,12 +48,12 @@ def _make_users():
     return {
         "admin": {
             "username": "admin",
-            "hashed_password": pwd_context.hash(settings.admin_password),
+            "hashed_password": hash_password(settings.admin_password),
             "role": "admin",
         },
         "analyst": {
             "username": "analyst",
-            "hashed_password": pwd_context.hash(settings.analyst_password),
+            "hashed_password": hash_password(settings.analyst_password),
             "role": "analyst",
         },
     }
@@ -161,7 +166,7 @@ async def login(body: LoginRequest):
     Passwords are set via ADMIN_PASSWORD / ANALYST_PASSWORD env vars.
     """
     user = _users().get(body.username)
-    if not user or not pwd_context.verify(body.password, user["hashed_password"]):
+    if not user or not verify_password(body.password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",

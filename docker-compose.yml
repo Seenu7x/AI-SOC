@@ -23,12 +23,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: aisoc-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-aisoc-redis-pass}
     ports:
       - "6379:6379"
     mem_limit: 128m
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-aisoc-redis-pass}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -41,7 +42,7 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://aisoc:${DB_PASSWORD:-aisoc_password}@db:5432/aisoc_db
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-aisoc-redis-pass}@redis:6379/0
       - API_HOST=0.0.0.0
       - API_PORT=8000
       - LOG_LEVEL=INFO
